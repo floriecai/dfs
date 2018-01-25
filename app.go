@@ -17,12 +17,14 @@ import "fmt"
 import "os"
 
 func main() {
-	serverAddr := "127.0.0.1:8080"
+	serverAddr := "127.0.0.1:8257"
 	localIP := "127.0.0.1"
 	localPath := "/tmp/dfs-dev/"
 
 	// Connect to DFS.
 	dfs, err := dfslib.MountDFS(serverAddr, localIP, localPath)
+
+	fmt.Printf("PRINTING DFS: %+v\n", dfs)
 	if checkError(err) != nil {
 		return
 	}
@@ -32,7 +34,7 @@ func main() {
 	defer dfs.UMountDFS()
 
 	// Check if hello.txt file exists in the global DFS.
-	exists, err := dfs.GlobalFileExists("helloworld")
+	// exists, err := dfs.GlobalFileExists("helloworld")
 	if checkError(err) != nil {
 		return
 	}

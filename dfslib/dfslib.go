@@ -9,8 +9,11 @@ file system (DFS) system to be used in assignment 2 of UBC CS 416
 package dfslib
 
 import (
+	"as2_g4w8/shared"
 	"fmt"
-	"io/ioutil"
+	"log"
+	"net"
+	"net/rpc"
 	"os"
 	"regexp"
 )
@@ -54,7 +57,7 @@ func (e DisconnectedError) Error() string {
 type ChunkUnavailableError uint8
 
 func (e ChunkUnavailableError) Error() string {
-	return fmt.Sprintf("DFS: Latest verson of chunk [%s] unavailable", string(e))
+	return fmt.Sprintf("DFS: Latest verson of chunk [%d] unavailable", string(e))
 }
 
 // Contains filename
@@ -136,8 +139,8 @@ type DFSFile interface {
 // DFSFileT Implementation of DFSFile
 type DFSFileT struct {
 	id        int
-	requestID int // ID of who made the request on this file, need to know the local path ....
-	name      string
+	requestID int    // ID of who made the request on this file, need to know the local path ....
+	name      string // filename
 	data      []Chunk
 }
 
@@ -147,71 +150,39 @@ func (file DFSFileT) Read(chunkNum uint8, chunk *Chunk) (err error) {
 	// if local doesn't have latest version, server
 
 	// do something like:
-	// rpc.Call('Read', chunkNum, Chunk, file.name, file.id)
+	// rpc.Call(READ, chunkNum, Chunk, file.name, file.id)
 	return nil
 }
 
 // ChunkToByte is helper function to convert the array of Chunks to a single byte array
-func (file DFSFileT) ChunkToByte() (err error) {
-	const ChunkLength = 32
+func (file *DFSFileT) ChunkToByte() (err error) {
+	// const ChunkLength = 32
 
-	var byteArr [len(file.data)]byte
+	// var byteArr [len(file.data)]byte
 
-	for i, chunk := range file.data {
-		for j := 0; j < ChunkLength; j++ {
-			byteArr[ChunkLength*i+j] = chunk[j]
-		}
-	}
-}
-
-func (file DFSFileT) Write(chunkNum uint8, chunk *Chunk) (err error) {
-	file.data[chunkNum] = *chunk
-
-	file.data
-	err = ioutil.WriteFile("somepath/"+file.name, chunk, 0644)
+	// for i, chunk := range file.data {
+	// 	for j := 0; j < ChunkLength; j++ {
+	// 		byteArr[ChunkLength*i+j] = chunk[j]
+	// 	}
+	// }
 	return nil
 }
 
-func (file DFSFileT) Close() (err error) {
-	return nil
-}
+func (file *DFSFileT) Write(chunkNum uint8, chunk *Chunk) error {
+	fileWriteRequest := shared.FileArgs{dfsSingleton.id, chunkNum, file.name}
 
-// DFSInstance is the implementation of the DFS Interface
-type DFSInstance struct {
-	id        int
-	localIP   string
-	localPath string
-}
+	var writeReply shared.WriteRequestReply
+	dfsSingleton.server.Call("ServerDfs.RequestWrite", fileWriteRequest, &writeReply)
 
-// LocalFileExists returns bool whether file is on client's disk
-func (dfs DFSInstance) LocalFileExists(fname string) (exists bool, err error) {
-	_, err = os.Stat(dfs.localPath + fname)
+	if writeReply.CanWrite {
 
-	if err == nil {
-		return true, nil
+		return nil
 	}
 
-	return false, FileDoesNotExistError(fname)
+	return OpenWriteConflictError(file.name)
 }
 
-// GlobalFileExists returns bool whether file is in DFS
-func (dfs DFSInstance) GlobalFileExists(fname string) (exists bool, err error) {
-	existsLocally, err := dfs.LocalFileExists(fname)
-	if existsLocally {
-		return true, nil
-	}
-
-	return false, FileDoesNotExistError(fname)
-}
-
-// Open returns file of fname
-func (dfs DFSInstance) Open(fname string, mode FileMode) (f DFSFile, err error) {
-
-	return nil, FileDoesNotExistError(fname)
-}
-
-// UMountDFS unmounts the current DFS and cleans up its resources
-func (dfs DFSInstance) UMountDFS() (err error) {
+func (file *DFSFileT) Close() (err error) {
 	return nil
 }
 
@@ -249,6 +220,47 @@ type DFS interface {
 	UMountDFS() (err error)
 }
 
+type DFSInstance struct {
+	id        int
+	localIp   string
+	localPath string
+	server    *rpc.Client
+}
+
+// LocalFileExists returns bool whether file is on client's disk
+func (dfs DFSInstance) LocalFileExists(fname string) (exists bool, err error) {
+	_, err = os.Stat(dfs.localPath + fname)
+
+	if err == nil {
+		return true, nil
+	}
+
+	return false, FileDoesNotExistError(fname)
+}
+
+// GlobalFileExists returns bool whether file is in DFS
+func (dfs DFSInstance) GlobalFileExists(fname string) (exists bool, err error) {
+	existsLocally, err := dfs.LocalFileExists(fname)
+	if existsLocally {
+		return true, nil
+	}
+
+	// dfs.server.Call("ServerDfs.")
+
+	return false, FileDoesNotExistError(fname)
+}
+
+// Open returns file of fname
+func (dfs DFSInstance) Open(fname string, mode FileMode) (f DFSFile, err error) {
+
+	return nil, FileDoesNotExistError(fname)
+}
+
+// UMountDFS unmounts the current DFS and cleans up its resources
+func (dfs DFSInstance) UMountDFS() (err error) {
+	return nil
+}
+
 // Open files and stuff
 func Open(fname string, mode FileMode) (f DFSFile, err error) {
 	regex, _ := regexp.Compile("^[a-z0-9]{1,16}$")
@@ -257,23 +269,83 @@ func Open(fname string, mode FileMode) (f DFSFile, err error) {
 		return nil, BadFilenameError(fname)
 	}
 
-	if mode == READ {
+	fmt.Println(os.Getwd())
+	fileExists, _ := dfsSingleton.GlobalFileExists(fname)
 
-	} else if mode == DREAD {
+	// if !fileExists {
+	// 	newFile, err := os.Create("." + dfsSingleton.localPath + fname + ".dfs")
+	// } else {
+	// 	if mode == DREAD {
+	// 		newFile, err := dfsSingleton.server.Call("ServerDfs.GetBestFile")
+	// 	}
+	// 	newFile, err := dfsSingleton.server.Call("ServerDfs.GetFile")
+	// }
 
-	} else if mode == WRITE {
+	args := shared.FileArgs{ClientId: dfsSingleton.id, ChunkNum: 0, Filename: fname}
+	switch mode {
+	case READ:
+		fmt.Println("Reading...")
+		if !fileExists {
+			// create the file
+		} else {
+			var dfsFile DFSFileT
+			dfsSingleton.server.Call("ServerDfs.GetLatestFile", args)
+		}
+	case DREAD:
+		fmt.Println("Dreading...")
+	case WRITE:
+		// 1) Request write
 
+		// chunkNum doesn't matter, I'm just reusing data structures
+		fileWriteRequest := shared.FileArgs{dfsSingleton.id, 0, fname}
+		var writeReply shared.WriteRequestReply
+		dfsSingleton.server.Call("ServerDfs.RequestWrite", fileWriteRequest, &writeReply)
+
+		if writeReply.CanWrite {
+
+			// TODO fcai - maybe just simplify it so both calls always call server.rpc
+			if dfsSingleton.LocalFileExists(fname) {
+				// write directly
+			}
+
+			if dfsSingle.GlobalFileExists {
+
+			}
+		}
+
+		return OpenWriteConflictError(file.name)
+	default:
+		return nil, nil
 	}
 
 	return nil, nil
 }
 
-// DFSSingleton an application's unique library
-var DFSSingleton *DFSInstance
+type ClientDfs struct{}
+
+// func (dfs *ClientDfs) PrintTest(args *shared.InitiateArgs, reply *shared.InitiateReply) error {
+// 	fmt.Println("PrintTest in client is: %+v", args)
+// 	*reply = shared.InitiateReply{100, true}
+// 	return nil
+// }
+
+// *************************** RPC THAT SERVER CALLS *********************** //
+func (dfs *ClientDfs) GetFile(args *shared.FileArgs, reply *shared.FileReply) error {
+	return nil
+}
+
+// TODO fcai - i don't think we actually need this .................................
+func (dfs *ClientDfs) WriteFile(args *shared.FileArgs, reply *shared.FileReply) error {
+	return nil
+}
+
+// *************************** RPC THAT SERVER CALLS ENDS ****************** //
+// dfsSingleton an application's unique library
+var dfsSingleton *DFSInstance
 
 // MountDFS is:
 // The constructor for a new DFS object instance. Takes the server's
-// IP:port address string as parameter, the localIP to use to
+// IP:port address string as parameter, the localIp to use to
 // establish the connection to the server, and a localPath path on the
 // local filesystem where the client has allocated storage (and
 // possibly existing state) for this DFS.
@@ -287,19 +359,18 @@ var DFSSingleton *DFSInstance
 //
 // Can return the following errors:
 // - LocalPathError
-// - Networking errors related to localIP or serverAddr
-func MountDFS(serverAddr string, localIP string, localPath string) (dfs DFS, err error) {
-	// TODO
-	// For now return LocalPathError
-
+// - Networking errors related to localIp or serverAddr
+func MountDFS(serverAddr string, localIp string, localPath string) (dfs DFS, err error) {
+	logger := log.New(os.Stdout, "[416 dfslib A2] ", log.Lshortfile)
 	_, err = os.Stat(localPath)
 
 	if err != nil {
 		return nil, LocalPathError(localPath)
 	}
 
-	if DFSSingleton != nil {
-		return DFSSingleton, nil
+	if dfsSingleton != nil {
+		logger.Println("Has dfs already")
+		return *dfsSingleton, nil
 	}
 
 	// Setup DFS
@@ -307,15 +378,26 @@ func MountDFS(serverAddr string, localIP string, localPath string) (dfs DFS, err
 	// 2) Setup connection to server ( this is a second thread ??? )
 	// 2) Return dfs
 
-	// 	conn = net.Listen(...)
-	//   rpc.Register(...)
-	//   go rpc.Accept(conn)
-	//   server = rpc.Dial(...)
-	//   id = fetchOldId()
-	//   server.Call("Hello", {clientId: id, clientIp: ip})
-	DFSSingleton = &DFSInstance{0, localIP, localPath}
+	generatedIP := localIp + ":1111" // TODO - can't hardcode this
+	// tcpListener, _ := net.ResolveTCPAddr("tcp", generatedIP)
+	conn, err := net.Listen("tcp", generatedIP)
+
+	localAddr := conn.Addr()
+
+	clientDfs := new(ClientDfs)
+	rpc.Register(clientDfs)
+	go rpc.Accept(conn)
+
+	server, err := rpc.Dial("tcp", serverAddr)
+
+	var initReply shared.InitiateReply
+	args := shared.InitiateArgs{Ip: localAddr.String(), LocalPath: localPath}
+	err = server.Call("ServerDfs.InitiateRPC", &args, &initReply)
+
+	fmt.Printf("Printing reply.... %+v\n", initReply)
+	dfsSingleton = &DFSInstance{id: initReply.Id, localIp: localIp, localPath: localPath, server: server}
 
 	// 1) Continuousing try to connect to server
 
-	return nil, LocalPathError(localPath)
+	return *dfsSingleton, nil
 }
