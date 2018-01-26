@@ -19,7 +19,7 @@ import "os"
 func main() {
 	serverAddr := "127.0.0.1:8257"
 	localIP := "127.0.0.1"
-	localPath := "/tmp/dfs-dev/"
+	localPath := "/tmp/dfs-g4w8/"
 
 	// Connect to DFS.
 	dfs, err := dfslib.MountDFS(serverAddr, localIP, localPath)
@@ -34,7 +34,7 @@ func main() {
 	defer dfs.UMountDFS()
 
 	// Check if hello.txt file exists in the global DFS.
-	// exists, err := dfs.GlobalFileExists("helloworld")
+	exists, err := dfs.GlobalFileExists("helloworld")
 	if checkError(err) != nil {
 		return
 	}

@@ -1,15 +1,13 @@
 package shared
 
-// type RPCArgs struct {
-// 	chunkNum uint8
-// 	chunk    *dfslib.Chunk
-// }
+import "fmt"
+
+const NumChunks = 256
 
 type OpenArgs struct {
 	Filename string
 }
 
-// ****************** RPC ARG TYPES THAT CLIENT CALLS ********** //
 type InitiateArgs struct {
 	Ip        string
 	LocalPath string
@@ -20,31 +18,35 @@ type InitiateReply struct {
 	Connected bool
 }
 
-type TempArgs struct {
-	Id int
+// type TempArgs struct {
+// 	Id int
+// }
+
+type ChunkArgs struct {
+	ChunkNum int
+	Chunk    Chunk
 }
+
+type ChunkReply struct {
+	Data Chunk
+}
+
 type FileArgs struct {
 	ClientId int // person who is requesting this
 	ChunkNum uint8
 	Filename string
 }
 
-type FileReply Chunk
+type FileReply DFSFileT
 
 type WriteRequestReply struct {
 	CanWrite bool
 }
 
-type FileExistArgs struct {
-	Filename string
-}
+type FileExistsArgs string
+type FileExistsReply bool
 
-// *****************RPC ARG TYPES THAT CLIENT CALLS END ******** //
-
-// **************** RPC ARG TYPES THAT SERVER CALLS ************ //
-
-// **************** RPC ARG TYPES THAT SERVER CALLS END********* //
-
+// Types for dfslib
 type Chunk [32]byte
 
 type DFSInstance struct {
@@ -54,8 +56,21 @@ type DFSInstance struct {
 }
 
 type DFSFileT struct {
-	Owner     int
-	RequestID int // ID of who made the request on this file, need to know the local path ....
-	Name      string
-	Data      []Chunk
+	Filename string
+	Data     [NumChunks]Chunk
 }
+
+// ************** ERRORS ****************** //
+type LatestChunkUnavailable string
+
+func (e LatestChunkUnavailable) Error() string {
+	return fmt.Sprintf("Latest Chunk unavailable", string(e))
+}
+
+type BestChunkUnavailable string
+
+func (e BestChunkUnavailable) Error() string {
+	return fmt.Sprintf("Best Chunk unavailable", string(e))
+}
+
+// *********** ERRORS END****************** //
