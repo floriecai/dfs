@@ -24,7 +24,7 @@ func main() {
 	// Connect to DFS.
 	dfs, err := dfslib.MountDFS(serverAddr, localIP, localPath)
 
-	fmt.Printf("PRINTING DFS: %+v\n", dfs)
+	fmt.Printf("PRINTING DFS: %+v\n\n", dfs)
 	if checkError(err) != nil {
 		return
 	}
@@ -35,6 +35,7 @@ func main() {
 
 	// Check if hello.txt file exists in the global DFS.
 	exists, err := dfs.GlobalFileExists("helloworld")
+	fmt.Println("LINE 38 ...... GlobalFileExists")
 	if checkError(err) != nil {
 		return
 	}
@@ -45,7 +46,9 @@ func main() {
 	}
 
 	// Open the file (and create it if it does not exist) for writing.
+	fmt.Println("LINE 49 ...... BEFORE OPEN")
 	f, err := dfs.Open("helloworld", dfslib.WRITE)
+	fmt.Println("LINE 51 ...... AFTER OPEN")
 	if checkError(err) != nil {
 		return
 	}
@@ -72,7 +75,7 @@ func main() {
 // If error is non-nil, print it out and return it.
 func checkError(err error) error {
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "Error ", err.Error())
+		fmt.Fprintln(os.Stderr, "Error ", err.Error())
 		return err
 	}
 	return nil

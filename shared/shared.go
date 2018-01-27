@@ -1,6 +1,8 @@
 package shared
 
-import "fmt"
+import (
+	"fmt"
+)
 
 const NumChunks = 256
 
@@ -37,7 +39,10 @@ type FileArgs struct {
 	Filename string
 }
 
-type FileReply DFSFileT
+type FileReply struct {
+	Filename string
+	Data     [256]Chunk
+}
 
 type WriteRequestReply struct {
 	CanWrite bool
@@ -48,17 +53,6 @@ type FileExistsReply bool
 
 // Types for dfslib
 type Chunk [32]byte
-
-type DFSInstance struct {
-	Id        int
-	LocalIP   string
-	LocalPath string
-}
-
-type DFSFileT struct {
-	Filename string
-	Data     [NumChunks]Chunk
-}
 
 // ************** ERRORS ****************** //
 type LatestChunkUnavailable string

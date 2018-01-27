@@ -11,12 +11,14 @@ package dfslib
 import (
 	"as2_g4w8/shared"
 	"fmt"
+	"io/ioutil"
 	"log"
 	"net"
 	"net/rpc"
 	"os"
 	"path/filepath"
 	"regexp"
+	"strconv"
 )
 
 const ChunkSize = 32
@@ -148,6 +150,7 @@ type DFSFileT struct {
 	Filename string
 	Data     [256]shared.Chunk
 	Mode     FileMode
+	Server   *rpc.Client
 }
 
 // Can return the following errors:
@@ -195,9 +198,13 @@ func (file DFSFileT) Read(chunkNum uint8, chunk *Chunk) error {
 // - DisconnectedError (in WRITE mode)
 // - WriteModeTimeoutError (in WRITE mode)
 func (file DFSFileT) Write(chunkNum uint8, chunk *Chunk) error {
+	log.Println("Write in file .....")
+
+	log.Println("dfs................. %+v", *dfsSingleton)
 	mode := dfsSingleton.modeMap[file.Filename]
+	log.Println("Mode is ...... %d", mode)
 	if mode != WRITE {
-		return BadFileModeError(file.Filename)
+		return BadFileModeError(file.Filename + " write mode: " + string(mode))
 	}
 
 	isDisconnected := false
@@ -295,19 +302,22 @@ func (dfs DFSInstance) GlobalFileExists(fname string) (exists bool, err error) {
 		return false, BadFilenameError(fname)
 	}
 
-	var existReply shared.FileExistsReply
-	dfsSingleton.server.Call("ServerDfs.DoesFileExist", shared.FileArgs{Filename: fname}, &existReply)
+	isDisconnected := false
+	if isDisconnected {
+		return false, DisconnectedError(fname)
+	}
 
+	var existReply shared.FileExistsReply
+	args := &shared.FileArgs{Filename: fname}
+
+	log.Println("Before RPC GlobalFileExists")
+	dfsSingleton.server.Call("ServerDfs.DoesFileExist", args, &existReply)
+	log.Println("After RPC GlobalFileExists")
 	if existReply {
 		return bool(existReply), nil
 	}
 
-	return false, FileDoesNotExistError(fname)
-}
-
-// Open returns file of fname
-func (dfs DFSInstance) Open(fname string, mode FileMode) (f DFSFile, err error) {
-	return nil, FileDoesNotExistError(fname)
+	return false, nil
 }
 
 // UMountDFS unmounts the current DFS and cleans up its resources
@@ -319,7 +329,7 @@ func (dfs DFSInstance) UMountDFS() (err error) {
 // - DisconnectedError (in READ,WRITE modes)
 // - FileUnavailableError (in READ,WRITE modes)
 // - FileDoesNotExistError (in DREAD mode)
-func Open(fname string, mode FileMode) (f DFSFile, err error) {
+func (dfs DFSInstance) Open(fname string, mode FileMode) (f DFSFile, err error) {
 	var dfsFile DFSFileT
 	regex, _ := regexp.Compile("^[a-z0-9]{1,16}$")
 
@@ -327,7 +337,6 @@ func Open(fname string, mode FileMode) (f DFSFile, err error) {
 		return nil, BadFilenameError(fname)
 	}
 
-	fmt.Println(os.Getwd())
 	fileExists, _ := dfsSingleton.GlobalFileExists(fname)
 
 	args := &shared.FileArgs{ClientId: dfsSingleton.id, Filename: fname}
@@ -356,6 +365,9 @@ func Open(fname string, mode FileMode) (f DFSFile, err error) {
 	}
 
 	// CONNECTED MODE
+	log.Println("rpinting mode map : %+v\n\n", *dfsSingleton)
+	// dfs.id
+	dfs.modeMap[fname] = mode
 	switch mode {
 	case READ:
 		fmt.Println("Reading...")
@@ -373,6 +385,7 @@ func Open(fname string, mode FileMode) (f DFSFile, err error) {
 		return dfsFile, nil
 
 	case DREAD:
+		log.SetFlags(log.LstdFlags | log.Lshortfile)
 		if !fileExists {
 			err = storeFileOnServer(fname, dfsSingleton.localPath, args, &dfsFile)
 			return dfsFile, err
@@ -387,13 +400,17 @@ func Open(fname string, mode FileMode) (f DFSFile, err error) {
 		return dfsFile, nil
 
 	case WRITE:
+		log.Println("Writing...")
 		if !fileExists {
+
 			err = storeFileOnServer(fname, dfsSingleton.localPath, args, &dfsFile)
+
 			return dfsFile, err
 		}
 
+		log.Println("Stored on server")
 		// If file exists on the server, request the write lock
-		fileWriteRequest := shared.FileArgs{ClientId: dfsSingleton.id, Filename: fname}
+		fileWriteRequest := &shared.FileArgs{ClientId: dfsSingleton.id, Filename: fname}
 		var writeReply shared.WriteRequestReply
 		dfsSingleton.server.Call("ServerDfs.RequestWrite", fileWriteRequest, &writeReply)
 
@@ -418,7 +435,7 @@ type ClientDfs struct{}
 // ************************  Helper funcs ************************** //
 
 func storeFileOnServer(fname string, localPath string, fileArgs *shared.FileArgs, dfsFile *DFSFileT) error {
-	file, err := createFile(fname, dfsSingleton.localPath)
+	file, err := createFile(fname, dfsSingleton.localPath, ".dfs")
 	if err != nil {
 		return err
 	}
@@ -428,15 +445,20 @@ func storeFileOnServer(fname string, localPath string, fileArgs *shared.FileArgs
 	dfsFile.Filename = fname
 
 	// Send to server that you created a file
-	var fileExists shared.FileReply
+	var fileExists shared.FileExistsReply
+	log.Println("storeFileOnServer .... ")
 	err = dfsSingleton.server.Call("ServerDfs.RegisterFile", fileArgs, &fileExists)
 
+	if err != nil {
+		log.Println("Error on storeFileOnServer")
+		log.Println("%s", err)
+	}
 	return err
 }
 
 // Creates a new file that is written to disk
-func createFile(fname string, localPath string) (file *os.File, err error) {
-	path := filepath.Join(localPath, fname+".dfs")
+func createFile(fname string, localPath string, extension string) (file *os.File, err error) {
+	path := filepath.Join(localPath, fname+extension)
 	f, err := os.Create(path)
 
 	if err != nil {
@@ -518,7 +540,7 @@ func (dfs *ClientDfs) GetFile(args *shared.FileArgs, reply *shared.FileReply) er
 
 // *************************** RPC THAT SERVER CALLS ENDS ****************** //
 // dfsSingleton an application's unique library
-var dfsSingleton *DFSInstance
+var dfsSingleton *DFSInstance = &DFSInstance{id: 100, modeMap: make(map[string]FileMode)}
 
 // MountDFS is:
 // The constructor for a new DFS object instance. Takes the server's
@@ -538,22 +560,40 @@ var dfsSingleton *DFSInstance
 // - LocalPathError
 // - Networking errors related to localIp or serverAddr
 func MountDFS(serverAddr string, localIp string, localPath string) (dfs DFS, err error) {
-	logger := log.New(os.Stdout, "[416 dfslib A2] ", log.Lshortfile)
+	logger := log.New(os.Stdout, "[416 dfslib A2] ", log.LstdFlags)
+	logger.SetFlags(log.LstdFlags | log.Lshortfile)
 	_, err = os.Stat(localPath)
 
 	if err != nil {
 		return nil, LocalPathError(localPath)
 	}
 
-	if dfsSingleton != nil {
-		logger.Println("Has dfs already")
-		return *dfsSingleton, nil
-	}
+	// Check for existing id on disk
+	// Initiate dfs
+	// var modeMap = make(map[string]FileMode)
+	// var dfsInstance = DFSInstance{
+	// 	localIp:   localIp,
+	// 	localPath: localPath,
+	// 	modeMap:   modeMap}
 
-	// Setup DFS
-	// 1) Setup heartbeat to server (1 go routine)
-	// 2) Setup connection to server ( this is a second thread ??? )
-	// 2) Return dfs
+	logger.Println("DFS Printing in Mount :::::::::::::::::: %+v\n\n", *dfsSingleton)
+	dfsSingleton.localIp = localIp
+	dfsSingleton.localPath = localPath
+
+	var id int
+
+	idFilePath := filepath.Join(localPath, "id")
+	_, err = os.Stat(idFilePath)
+	isReconnectingClient := err != nil
+
+	if !isReconnectingClient {
+		// Old client
+		idFile, _ := os.Open(idFilePath)
+		idBytes, _ := ioutil.ReadAll(idFile)
+		id, _ = strconv.Atoi(string(idBytes))
+
+		dfsSingleton.id = id
+	}
 
 	generatedIP := localIp + ":1111" // TODO - can't hardcode this
 	conn, err := net.Listen("tcp", generatedIP)
@@ -566,14 +606,51 @@ func MountDFS(serverAddr string, localIp string, localPath string) (dfs DFS, err
 
 	server, err := rpc.Dial("tcp", serverAddr)
 
-	var initReply shared.InitiateReply
-	args := shared.InitiateArgs{Ip: localAddr.String(), LocalPath: localPath}
-	err = server.Call("ServerDfs.InitiateRPC", &args, &initReply)
+	// Continuously keep trying to connect
+	// if err != nil {
+	// 	serverChannel := make(chan *rpc.Client)
+	// 	go func(sAddr string) {
+	// 		var server *rpc.Client
+	// 		for server == nil {
+	// 			server, err = rpc.Dial("tcp", sAddr)
+	// 		}
 
-	fmt.Printf("Printing reply.... %+v\n", initReply)
-	dfsSingleton = &DFSInstance{id: initReply.Id, localIp: localIp, localPath: localPath, server: server}
+	// 		serverChannel <- server
+	// 	}(serverAddr)
+
+	// 	server := <-serverChannel
+
+	// }
+
+	// dfsSingleton.server = server
+
+	if !isReconnectingClient {
+		// Write id to disk
+		var initReply shared.InitiateReply
+		args := &shared.InitiateArgs{Ip: localAddr.String(), LocalPath: localPath}
+
+		err = server.Call("ServerDfs.InitiateRPC", args, &initReply)
+
+		logger.Printf("Printing reply.... %+v\n\n", initReply)
+
+		idFile, err := createFile("id", localPath, ".log")
+
+		if err != nil {
+			logger.Fatal("WTF MAN .... Create the goddamn ID file")
+		}
+
+		defer idFile.Close()
+
+		idData := []byte(strconv.Itoa(initReply.Id))
+		idFile.Write(idData)
+
+		id = initReply.Id
+	}
+
+	dfsSingleton = &DFSInstance{id: id, server: server}
 
 	// 1) Continuousing try to connect to server
 
+	log.Println("Printing dfs singleton ............ %+v", *dfsSingleton)
 	return *dfsSingleton, nil
 }

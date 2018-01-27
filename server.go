@@ -181,7 +181,7 @@ func (dfs *ServerDfs) RequestWrite(args shared.FileArgs, reply *shared.WriteRequ
 	return nil
 }
 
-func (dfs *ServerDfs) GetBestChunk(args *shared.FileArgs, reply *shared.FileReply) error {
+func (dfs *ServerDfs) GetBestChunk(args *shared.FileArgs, reply *shared.ChunkReply) error {
 	versionMap := dfsState.versionMap
 	versionStack := versionMap[args.Filename][args.ChunkNum]
 	for !versionStack.IsEmpty() {
@@ -305,12 +305,6 @@ func (dfs *ServerDfs) InitiateRPC(args *shared.InitiateArgs, reply *shared.Initi
 	RecordClientInfo(client, args, reply, dfs)
 
 	reply.Connected = true
-	// err = client.Call("ClientDfs.PrintTest", args, reply)
-
-	if err != nil {
-		log.Fatal("CLIENT DFS PRINT TEST FAILED\n")
-	}
-	// log.Println("REply is :::::: %+v", *reply)
 	return err
 }
 
@@ -329,7 +323,6 @@ func RecordClientInfo(clientConn *rpc.Client, args *shared.InitiateArgs, reply *
 	}
 
 	reply.Id = clientId
-
 }
 
 func main() {
