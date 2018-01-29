@@ -37,7 +37,6 @@ type FileArgs struct {
 	ClientId int // person who is requesting this
 	ChunkNum uint8
 	Filename string
-	Filepath string
 }
 
 type FileReply struct {
