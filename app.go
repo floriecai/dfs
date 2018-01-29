@@ -19,7 +19,7 @@ import "os"
 func main() {
 	serverAddr := "127.0.0.1:8257"
 	localIP := "127.0.0.1"
-	localPath := "/tmp/dfs-g4w8/"
+	localPath := "/tmp/dfs-g4w81/"
 
 	// Connect to DFS.
 	dfs, err := dfslib.MountDFS(serverAddr, localIP, localPath)
@@ -34,8 +34,8 @@ func main() {
 	defer dfs.UMountDFS()
 
 	// Check if hello.txt file exists in the global DFS.
-	exists, err := dfs.GlobalFileExists("helloworld")
-	fmt.Println("LINE 38 ...... GlobalFileExists")
+	exists, err := dfs.GlobalFileExists("a2")
+	fmt.Println("GLOBAL_FILE_EXISTS: a2 %t", exists)
 	if checkError(err) != nil {
 		return
 	}
@@ -46,30 +46,42 @@ func main() {
 	}
 
 	// Open the file (and create it if it does not exist) for writing.
-	fmt.Println("LINE 49 ...... BEFORE OPEN")
-	f, err := dfs.Open("helloworld", dfslib.WRITE)
-	fmt.Println("LINE 51 ...... AFTER OPEN")
+	f, err := dfs.Open("a2", dfslib.WRITE)
 	if checkError(err) != nil {
 		return
 	}
 
-	// Close the file on exit.
-	defer f.Close()
-
-	// Create a chunk with a string message.
 	var chunk dfslib.Chunk
 	const str = "Hello friends!"
 	copy(chunk[:], str)
 
 	// Write the 0th chunk of the file.
 	err = f.Write(0, &chunk)
-	if checkError(err) != nil {
+	if err != nil {
+		fmt.Println("Write error")
+		checkError(err)
 		return
 	}
 
-	// Read the 0th chunk of the file.
-	err = f.Read(0, &chunk)
-	checkError(err)
+	for {
+	}
+	// // Close the file on exit.
+	// defer f.Close()
+
+	// // Create a chunk with a string message.
+	// var chunk dfslib.Chunk
+	// const str = "Hello friends!"
+	// copy(chunk[:], str)
+
+	// // Write the 0th chunk of the file.
+	// err = f.Write(0, &chunk)
+	// if checkError(err) != nil {
+	// 	return
+	// }
+
+	// // Read the 0th chunk of the file.
+	// err = f.Read(0, &chunk)
+	// checkError(err)
 }
 
 // If error is non-nil, print it out and return it.

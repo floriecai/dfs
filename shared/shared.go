@@ -37,6 +37,7 @@ type FileArgs struct {
 	ClientId int // person who is requesting this
 	ChunkNum uint8
 	Filename string
+	Filepath string
 }
 
 type FileReply struct {
@@ -44,8 +45,10 @@ type FileReply struct {
 	Data     [256]Chunk
 }
 
+// Used for Requesting the Write Lock and Notifying a Write has occured
 type WriteRequestReply struct {
 	CanWrite bool
+	Id       int // TODO remove this
 }
 
 type FileExistsArgs string

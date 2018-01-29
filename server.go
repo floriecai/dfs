@@ -23,6 +23,7 @@ import (
 
 // MaxClients is unique clients to ever connect to the server
 const MaxClients = 16
+const ChunkSize = 32
 const NumChunks = 256
 const WriteTimeout = 10000 // ms
 
@@ -53,37 +54,75 @@ func (e StackError) Error() string {
 	return fmt.Sprintf("No items in the stack to pop or peek")
 }
 
-type VersionStack []FileOwnerMetadata
+type StackReturnError string
 
-func (s VersionStack) Push(metadata FileOwnerMetadata) {
-	s = append(s, metadata)
+func (e StackReturnError) Error() string {
+	return fmt.Sprintf("Stack return no items to pop or peek")
 }
 
-func (s VersionStack) Pop() (fData FileOwnerMetadata, err error) {
+// Max 16 Clients, so 16 unique versions, but each client can have a version
+// i.e. C1 and C2 could have V2, both on the stack
+// so max 256 items in this stack
+// When pushing, must check for previous version with SAME owner
+type VersionStack []FileOwnerMetadata
+
+// If there's 1 item in the list
+func (s *VersionStack) IsTrivial() bool {
+	return len(*s) == 1
+}
+
+func (s *VersionStack) Push(metadata FileOwnerMetadata) {
+	// Scan for previous versions of same owner
+
+	endPos := len(*s) - 1
+	stack := *s
+	for i, fMetadata := range stack {
+		if fMetadata.owner == metadata.owner {
+			if i == endPos {
+				head := stack[:endPos]
+				*s = append(head, metadata)
+			} else if i == 0 {
+				head := stack[i+1:]
+				*s = append(head, fMetadata)
+			} else {
+				head := stack[:i]
+				tail := stack[i+1:]
+				*s = append(append(head, tail...), metadata)
+			}
+
+			return
+		}
+	}
+
+	updatedStack := *s
+	*s = append(updatedStack, metadata)
+}
+
+func (s *VersionStack) Pop() (fData FileOwnerMetadata, err error) {
 	var latestMetadata FileOwnerMetadata
-	stack := s
+	stack := *s
 	if len(stack) == 0 {
 		return latestMetadata, StackError("Can't pop")
 	}
 
-	latestMetadata = stack[len(s)-1]
-	s = stack[0 : len(stack)-1]
+	latestMetadata = stack[len(stack)-1]
+	*s = stack[0 : len(stack)-1]
 	return latestMetadata, nil
 }
 
-func (s VersionStack) Peek() (fData FileOwnerMetadata, err error) {
+func (s *VersionStack) Peek() (fData FileOwnerMetadata, err error) {
 	var latestMetadata FileOwnerMetadata
-	stack := s
+	stack := *s
 	if len(stack) == 0 {
 		return latestMetadata, StackError("Can't peek")
 	}
 
-	latestMetadata = stack[len(s)-1]
+	latestMetadata = stack[len(stack)-1]
 	return latestMetadata, nil
 }
 
-func (s VersionStack) IsEmpty() bool {
-	return len(s) == 0
+func (s *VersionStack) IsEmpty() bool {
+	return len(*s) == 0
 }
 
 type WriterDeniedError string
@@ -113,20 +152,22 @@ type ClientConn struct {
 	localPath string
 }
 
-type ServerDfs struct{}
-
-type ChunkMap [256]VersionStack
-type ServerState struct {
-	writerMap  map[string]WriteState // filename to it's write state
-	versionMap map[string]ChunkMap   // filename to {owner, versionNum}
+type WriterInfo struct {
+	WriteState WriteState
+	ClientId   int
+}
+type ServerDfs struct {
+	writerMap  map[string]WriterInfo        // filename to it's write state
+	versionMap map[string][256]VersionStack // filename to {owner, versionNum}
 	nextId     int
 	clientToId map[ClientInfo]int
 	idToClient map[int]ClientConn
 	openedFile map[string]int  // filenames to clientIDs who have opened them
 	files      map[string]bool // files that exist
+	logger     *log.Logger
 }
 
-var dfsState ServerState
+// type ChunkMap [256]VersionStack
 
 // func (dfs *ServerDfs) Read(args shared.FileArgs, reply *shared.FileReply) error {
 // 	return nil
@@ -152,58 +193,129 @@ var dfsState ServerState
 // func (t *T) MethodName(argType T1, replyType *T2) error
 func (dfs *ServerDfs) RegisterFile(args *shared.FileArgs, reply *shared.FileExistsReply) error {
 	fname := args.Filename
-	dfsState.files[fname] = true
-	dfsState.openedFile[fname] = args.ClientId
+	dfs.files[fname] = true
+	dfs.openedFile[fname] = args.ClientId
 
-	var versionStacks = make([]VersionStack, NumChunks)
-	for _, v := range versionStacks {
+	var versionStacks [256]VersionStack
+	for i := 0; i < NumChunks; i++ {
+		versionStack := &VersionStack{}
 		var metaData = FileOwnerMetadata{owner: args.ClientId, version: 0}
-		v.Push(metaData)
+		versionStack.Push(metaData)
+
+		versionStacks[i] = *versionStack
+		if i == 0 {
+			dfs.logger.Println("V1 Stack: %+v ", *versionStack)
+		}
 	}
 
-	var chunkMap [NumChunks]VersionStack
-	copy(chunkMap[:], versionStacks)
-	dfsState.versionMap[fname] = ChunkMap(chunkMap)
+	// dfs.logger.Println("Version stack ..... %+v\n\n", versionStacks)
+
+	dfs.versionMap[args.Filename] = versionStacks
+
+	dfs.logger.Println("VERSION MAP OF EVERYTHING IS: %+v \n\n", dfs.versionMap[args.Filename][0])
+	// var chunkMap [NumChunks]VersionStack
+	// copy(chunkMap[:], versionStacks[:])
+	// dfs.versionMap[fname] = ChunkMap(chunkMap)
+
+	// dfs.logger.Println("PRINTING REGISTER FILE MAP: ...... \n\n %+v \n\n", *dfs)
 	*reply = true
 
 	return nil
+
+	// chunkMap := make([]FileOwnerMetadata, 256)
+	// for i, _ := range chunkMap {
+	// 	chunkMap[i] = FileOwnerMetadata{owner: args.ClientId, version: 0}
+	// }
+
+	// *reply = true
 }
 
 func (dfs *ServerDfs) DoesFileExist(args *shared.FileExistsArgs, reply *shared.FileExistsReply) error {
-	hasFile := dfsState.files[string(*args)]
+	hasFile := dfs.files[string(*args)]
 	*reply = shared.FileExistsReply(hasFile)
 	return nil
 }
 
+func (dfs *ServerDfs) WriteChunk(args *shared.FileArgs, reply *shared.WriteRequestReply) error {
+	versionMap := dfs.versionMap[args.Filename]
+	latestMetadata, err := versionMap[args.ChunkNum].Peek()
+
+	dfs.logger.Printf("Latest meta is: %v\n", latestMetadata)
+	if err != nil {
+		return err
+	}
+	newVersion := latestMetadata.version + 1
+	metadata := FileOwnerMetadata{owner: args.ClientId, version: newVersion}
+	versionMap[args.ChunkNum].Push(metadata)
+
+	dfs.logger.Printf("WriteChunk: version map is: %v\n", dfs.versionMap[args.Filename][0])
+	reply.CanWrite = true
+	reply.Id = dfs.nextId
+
+	return nil
+}
+func (dfs *ServerDfs) ReturnWriteLock(args shared.FileArgs, reply *shared.WriteRequestReply) error {
+	delete(dfs.writerMap, args.Filename)
+	reply.CanWrite = false
+	return nil
+}
+
 func (dfs *ServerDfs) RequestWrite(args shared.FileArgs, reply *shared.WriteRequestReply) error {
-	isLocked := uint32(dfsState.writerMap[args.Filename])
-	reply.CanWrite = atomic.CompareAndSwapUint32(&isLocked, uint32(Unlocked), uint32(Locked))
+	writerInfo := dfs.writerMap[args.Filename]
+	locked := uint32(writerInfo.WriteState)
+
+	// Need to check for timeouts ......
+	if writerInfo.WriteState == Locked {
+		reply.CanWrite = false
+	} else {
+		canWrite := atomic.CompareAndSwapUint32(&locked, uint32(Unlocked), uint32(Locked))
+		if canWrite {
+			dfs.writerMap[args.Filename] = WriterInfo{ClientId: args.ClientId, WriteState: Locked}
+		}
+		reply.CanWrite = canWrite
+	}
 	return nil
 }
 
 func (dfs *ServerDfs) GetBestChunk(args *shared.FileArgs, reply *shared.ChunkReply) error {
-	versionMap := dfsState.versionMap
-	versionStack := versionMap[args.Filename][args.ChunkNum]
-	for !versionStack.IsEmpty() {
-		latestFileData, _ := versionStack.Pop()
-		clientInfo := dfsState.idToClient[latestFileData.owner]
+	versionStack := dfs.versionMap[args.Filename][args.ChunkNum]
 
-		e := clientInfo.conn.Call("GetFile", args, reply)
+	// For loop is for using a copy of the map, not the map itself
 
-		if e == nil {
-			return nil
+	var err error
+
+	var temp []FileOwnerMetadata
+	// versionStack
+	copy(temp[:], versionStack[:])
+
+	versionStackCopy := VersionStack(temp)
+	for !versionStackCopy.IsEmpty() {
+		latestFileData, _ := versionStackCopy.Pop()
+		clientInfo := dfs.idToClient[latestFileData.owner]
+
+		var getChunkReply shared.ChunkReply
+		err = clientInfo.conn.Call("ClientDfs.GetChunk", args, &getChunkReply)
+		if err == nil {
+			*reply = getChunkReply
+
+			newVersionMetadata := FileOwnerMetadata{owner: args.ClientId, version: latestFileData.version + 1}
+
+			versionStack.Push(newVersionMetadata)
+
+			return err // Found the latest chunk
 		}
 	}
-	return nil // TODO No file to get
+
+	return shared.BestChunkUnavailable(args.Filename) // TODO No file to get
 }
 
 func (dfs *ServerDfs) GetLatestChunk(args *shared.FileArgs, reply *shared.ChunkReply) error {
-	versionMap := dfsState.versionMap
+	versionMap := dfs.versionMap
 	versionStack := versionMap[args.Filename][args.ChunkNum]
 	latestFileData, _ := versionStack.Peek()
 
 	// Attempt to retrieve this chunk version from Client B
-	clientInfo := dfsState.idToClient[latestFileData.owner]
+	clientInfo := dfs.idToClient[latestFileData.owner]
 
 	e := clientInfo.conn.Call("ClientDfs.GetChunk", args, reply)
 
@@ -216,33 +328,47 @@ func (dfs *ServerDfs) GetLatestChunk(args *shared.FileArgs, reply *shared.ChunkR
 	return nil
 }
 
+// Gets the latest version of each chunk of a file.
+// Throws BestChunkUnavailableError if the only chunk available is a trivial version
+// and there were non-trivial versions (but were disconnected)
 func (dfs *ServerDfs) GetBestFile(args *shared.FileArgs, reply *shared.FileReply) error {
 	var fileData [NumChunks]shared.Chunk
 
 	for i := 0; i < NumChunks; i++ {
-		versionMap := dfsState.versionMap
-		versionMapCopy := versionMap[args.Filename][i]
+		versionMapCopy := dfs.versionMap[args.Filename][i]
+		hasTrivial := versionMapCopy.IsTrivial()
 		var foundChunk bool
-		for !versionMapCopy.IsEmpty() {
-			latestVersion, err := versionMapCopy.Pop()
-			latestVersionOwner := latestVersion.owner
 
-			// Server calls Client's RPC of latestVersion.owner
-			clientConnInfo := dfsState.idToClient[latestVersionOwner]
-			var clientRpcReply shared.ChunkReply
-			err = clientConnInfo.conn.Call("ClientDfs.GetChunk", args, clientRpcReply)
+		if hasTrivial {
+			// Just return an empty copy
+			var trivialChunk [ChunkSize]byte
+			trivialData := make([]byte, ChunkSize)
+			copy(trivialChunk[:], trivialData)
+			fileData[i] = trivialChunk
+		} else {
+			// We want non-trivial versions if there is one
+			for !versionMapCopy.IsTrivial() {
+				latestVersion, err := versionMapCopy.Pop()
+				latestVersionOwner := latestVersion.owner
 
-			// Found the chunk
-			if err == nil {
-				foundChunk = true
-				fileData[i] = clientRpcReply.Data
-				break
+				// Server calls Client's RPC of latestVersion.owner
+				clientConnInfo := dfs.idToClient[latestVersionOwner]
+				var clientRpcReply shared.ChunkReply
+				err = clientConnInfo.conn.Call("ClientDfs.GetChunk", args, clientRpcReply)
+
+				dfs.logger.Println("Printing err .... %s", err.Error())
+				// Found the chunk
+				if err == nil {
+					foundChunk = true
+					fileData[i] = clientRpcReply.Data
+					break
+				}
+			}
+
+			if !foundChunk {
+				return shared.BestChunkUnavailable(args.Filename)
 			}
 		}
-
-		if !foundChunk {
-			return shared.BestChunkUnavailable(args.Filename)
-		}
 	}
 
 	reply.Filename = args.Filename
@@ -250,41 +376,41 @@ func (dfs *ServerDfs) GetBestFile(args *shared.FileArgs, reply *shared.FileReply
 	return nil
 }
 
-func (dfs *ServerDfs) GetLatestFile(args *shared.FileArgs, reply *shared.FileReply) error {
-	var fileData [NumChunks]shared.Chunk
-	versionMap := dfsState.versionMap
-	for i := 0; i < NumChunks; i++ {
-		versionStack := versionMap[args.Filename][i]
-		latestVersion, err := versionStack.Peek()
-		latestVersionOwner := latestVersion.owner
+// func (dfs *ServerDfs) GetLatestFile(args *shared.FileArgs, reply *shared.FileReply) error {
+// 	var fileData [NumChunks]shared.Chunk
+// 	versionMap := dfs.versionMap
+// 	for i := 0; i < NumChunks; i++ {
+// 		versionStack := versionMap[args.Filename][i]
+// 		latestVersion, err := versionStack.Peek()
+// 		latestVersionOwner := latestVersion.owner
 
-		// Server calls Client's RPC of latestVersion.owner
-		clientConnInfo := dfsState.idToClient[latestVersionOwner]
-		var clientRpcReply shared.ChunkReply
-		err = clientConnInfo.conn.Call("ClientDfs.GetChunk", args, clientRpcReply)
+// 		// Server calls Client's RPC of latestVersion.owner
+// 		clientConnInfo := dfs.idToClient[latestVersionOwner]
+// 		var clientRpcReply shared.ChunkReply
+// 		err = clientConnInfo.conn.Call("ClientDfs.GetChunk", args, clientRpcReply)
 
-		// Could not get latest file, then it'll fail
-		if err != nil {
-			fmt.Println("Wtf happened in GetLatestFile")
-			return err
-		}
+// 		// Could not get latest file, then it'll fail
+// 		if err != nil {
+// 			fmt.Println("Wtf happened in GetLatestFile")
+// 			return err
+// 		}
 
-		fileData[i] = clientRpcReply.Data
-	}
+// 		fileData[i] = clientRpcReply.Data
+// 	}
 
-	reply.Filename = args.Filename
-	reply.Data = fileData
+// 	reply.Filename = args.Filename
+// 	reply.Data = fileData
 
-	return nil
-}
+// 	return nil
+// }
 
 // Literally brute forcing this, run through all clients and go find that damn file
 func (dfs *ServerDfs) GetAnyFile(args *shared.FileArgs, reply *shared.FileReply) error {
-	numClients := len(dfsState.idToClient)
+	numClients := len(dfs.idToClient)
 	var clientRpcReply shared.FileReply
 	var foundFile bool
 	for i := 1; i <= numClients; i++ {
-		client := dfsState.idToClient[i]
+		client := dfs.idToClient[i]
 		err := client.conn.Call("ClientDfs.GetFile", args, &clientRpcReply)
 
 		if err == nil {
@@ -304,6 +430,7 @@ func (dfs *ServerDfs) InitiateRPC(args *shared.InitiateArgs, reply *shared.Initi
 	client, err := rpc.Dial("tcp", args.Ip)
 	RecordClientInfo(client, args, reply, dfs)
 
+	dfs.logger.Println("DFS in Initiate is ..... %+v", *dfs)
 	reply.Connected = true
 	return err
 }
@@ -313,15 +440,17 @@ func (dfs *ServerDfs) InitiateRPC(args *shared.InitiateArgs, reply *shared.Initi
 // Returns unique id of this client
 func RecordClientInfo(clientConn *rpc.Client, args *shared.InitiateArgs, reply *shared.InitiateReply, dfs *ServerDfs) {
 	var clientInfo = ClientInfo{ip: args.Ip, localPath: args.LocalPath}
-	clientId := dfsState.clientToId[clientInfo]
+	clientId := dfs.clientToId[clientInfo]
 
 	if clientId == 0 {
-		clientId = dfsState.nextId
-		dfsState.clientToId[clientInfo] = clientId
-		dfsState.idToClient[clientId] = ClientConn{conn: clientConn, localPath: args.LocalPath}
-		dfsState.nextId++
+		clientId = dfs.nextId
+		dfs.clientToId[clientInfo] = clientId
+		dfs.idToClient[clientId] = ClientConn{conn: clientConn, localPath: args.LocalPath}
+		dfs.nextId++
 	}
 
+	dfs.logger.Println("DFS IS ...... %+v", *dfs)
+	dfs.logger.Println("Client id is ...... %d", clientId)
 	reply.Id = clientId
 }
 
@@ -329,18 +458,17 @@ func main() {
 	// serverIp := os.Args[1]
 
 	var logger = log.New(os.Stdout, "[416_a2] ", log.Lshortfile)
-	dfsImpl := new(ServerDfs)
-	rpc.Register(dfsImpl)
-
-	// Initialize data structures
-	versionMap := make(map[string]ChunkMap)
-	dfsState = ServerState{
-		versionMap: versionMap,
+	dfs := &ServerDfs{
+		writerMap:  make(map[string]WriterInfo),
+		versionMap: make(map[string][256]VersionStack),
 		nextId:     1,
 		clientToId: make(map[ClientInfo]int),
 		idToClient: make(map[int]ClientConn),
-		openedFile: make(map[string]int),  // filenames to clientIDs who have opened them
-		files:      make(map[string]bool)} // files that exist}
+		openedFile: make(map[string]int), // filenames to clientIDs who have opened them
+		files:      make(map[string]bool),
+		logger:     logger}
+
+	rpc.Register(dfs)
 
 	// l, err := net.Listen("tcp", serverIp)
 	l, err := net.Listen("tcp", ":8257")
@@ -349,14 +477,14 @@ func main() {
 	}
 
 	// Go routine to accept incoming connections
-	go func(l net.Listener) {
-		for {
-			logger.Println("Printing....")
-			conn, _ := l.Accept()
-			rpc.ServeConn(conn)
-		}
-	}(l)
-
+	// go func(l net.Listener) {
 	for {
+		logger.Println("Printing....")
+		conn, _ := l.Accept()
+		go rpc.ServeConn(conn)
 	}
+	// }(l)
+
+	// for {
+	// }
 }
