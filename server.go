@@ -484,7 +484,6 @@ func main() {
 	// Go routine to accept incoming connections
 	// go func(l net.Listener) {
 	for {
-		logger.Println("Printing....")
 		conn, _ := l.Accept()
 		go rpc.ServeConn(conn)
 	}
