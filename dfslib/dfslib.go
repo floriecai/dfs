@@ -53,8 +53,6 @@ const (
 	DEFAULT
 )
 
-const LogFile = "dfs.log"
-
 type IdFile struct {
 	Id        int    `json:"id"`
 	LocalAddr string `json:"localAddr`
@@ -264,15 +262,13 @@ func (file DFSFileT) Write(chunkNum uint8, chunk *Chunk) error {
 
 	// Write locally to disk
 	path := filepath.Join(file.Filepath, file.Filename+".dfs")
-	fmt.Printf("Write ... path is: %s\n", path)
 	localFile, err := os.OpenFile(path, os.O_WRONLY, 0644)
 
 	defer localFile.Close()
 
 	if err != nil {
 		checkError(err)
-		fmt.Println("Write .... open file error ....")
-		return nil
+		return err
 	}
 
 	var writeBuf []byte = make([]byte, 32)
@@ -283,8 +279,7 @@ func (file DFSFileT) Write(chunkNum uint8, chunk *Chunk) error {
 
 	if err != nil {
 		checkError(err)
-		fmt.Println("Write ... error at WriteAt ...")
-		return nil
+		return err
 	}
 
 	// Write to log
@@ -312,8 +307,6 @@ func (file DFSFileT) Write(chunkNum uint8, chunk *Chunk) error {
 	if !reply.CanWrite {
 		return WriteModeTimeoutError(file.Filename)
 	}
-
-	fmt.Println("Write ... reply is: %t", reply.CanWrite)
 
 	file.Versions[chunkNum] = reply.Version
 	if err != nil {
@@ -344,7 +337,8 @@ func (file DFSFileT) Close() error {
 		file.Server.Call("ServerDfs.CloseWrite", &args, &reply)
 
 		if !reply.CanWrite {
-			fmt.Println("WRITE LOCK WASN'T RETURNED ")
+			// ERROR .... Write Lock wasn't returned then
+			return nil
 		}
 	}
 
@@ -521,7 +515,6 @@ func (dfs DFSInstance) Open(fname string, mode FileMode) (f DFSFile, err error) 
 
 	// CONNECTED MODE
 	if !fileExists {
-		fmt.Println("Before storeFileOnServer .... id is: %+v", *args)
 		err = storeFileOnServer(fname, dfs.localPath, dfs.server, args, &dfsFile)
 
 		// Became disconnected while trying to register new file to server
@@ -532,7 +525,6 @@ func (dfs DFSInstance) Open(fname string, mode FileMode) (f DFSFile, err error) 
 
 	switch mode {
 	case READ:
-		fmt.Println("Reading...")
 		var dfsFileReply shared.FileReply
 		err = dfs.server.Call("ServerDfs.GetBestFile", args, &dfsFileReply)
 
@@ -553,8 +545,6 @@ func (dfs DFSInstance) Open(fname string, mode FileMode) (f DFSFile, err error) 
 		return dfsFile, nil
 
 	case DREAD:
-		fmt.Println("DReading...")
-
 		existsLocally, _ := dfs.LocalFileExists(fname)
 
 		if existsLocally {
@@ -563,7 +553,7 @@ func (dfs DFSInstance) Open(fname string, mode FileMode) (f DFSFile, err error) 
 
 			if err != nil {
 				checkError(err)
-				fmt.Println("ERROR IN DREAD OPEN FILE, CONNECTED, GET CHUNKEDFILE")
+				return dfsFile, err
 			}
 
 			dfsFile.Data = data
@@ -596,15 +586,13 @@ func (dfs DFSInstance) Open(fname string, mode FileMode) (f DFSFile, err error) 
 		var writeReply shared.WriteRequestReply
 		dfs.server.Call("ServerDfs.RequestWrite", fileWriteRequest, &writeReply)
 
-		log.Println("Write Request Reply is >>>>> ::::: %t", writeReply.CanWrite)
-
 		if writeReply.CanWrite {
 			var dfsFileReply shared.FileReply
 			err = dfs.server.Call("ServerDfs.GetBestFile", args, &dfsFileReply)
 
 			if err != nil {
-				fmt.Println("Error in GetBestFile")
 				checkError(err)
+				return dfsFile, err
 			}
 
 			dfsFile.Data = dfsFileReply.Data
@@ -656,16 +644,15 @@ func writeFileLocally(dfsFile DFSFileT) error {
 
 	if err != nil {
 		checkError(err)
-		fmt.Println("Write file locally error")
 		return err
 	}
 
 	defer f.Close()
 
-	n, err := f.Write(fileByteData)
+	_, err = f.Write(fileByteData)
 	if err != nil {
 		checkError(err)
-		fmt.Printf("Issue writing to file locally.... wrote %d bytes\n", n)
+		return err
 	}
 
 	f.Sync()
@@ -675,7 +662,6 @@ func writeFileLocally(dfsFile DFSFileT) error {
 func storeFileOnServer(fname string, localPath string, server *rpc.Client, fileArgs *shared.FileArgs, dfsFile *DFSFileT) error {
 	_, err := createFile(fname, localPath, ".dfs")
 	if err != nil {
-		log.Println("storeFileOnServer: Can't createFile")
 		return err
 	}
 
@@ -691,15 +677,8 @@ func storeFileOnServer(fname string, localPath string, server *rpc.Client, fileA
 
 	// Becomes disconnected
 	if err != nil {
-		fmt.Println("Removing file in serverCreated")
 		os.Remove(filepath)
 		checkError(err)
-
-		if err != nil {
-			fmt.Println("Removed just created file .......... %s", err.Error())
-		}
-		fmt.Println("Error on storeFileOnServer")
-
 	}
 	return err
 }
@@ -734,11 +713,9 @@ func chunkify(chunkNum uint8, filepath string) (data shared.Chunk, err error) {
 	chunkBuf := make([]byte, ChunkSize)
 	offset := int64(chunkNum) * ChunkSize
 
-	n, err := file.ReadAt(chunkBuf, offset)
+	_, err = file.ReadAt(chunkBuf, offset)
 
 	if err != nil {
-		fmt.Printf("Printing buffer: %s", string(chunkBuf))
-		fmt.Printf("Read %d bytes .... buf len: %d , offset is: %d\n", n, len(chunkBuf), offset)
 		checkError(err)
 		return chunk, err
 	}
@@ -766,9 +743,6 @@ func getChunkedFile(filepath string) (data [NumChunks]shared.Chunk, err error) {
 }
 
 func initiateHeartBeatProtocol(id int, serverAddr string, localAddr string) {
-	log.Fatal("blah")
-	fmt.Println("SERVER ADDRESS IS: %s, local Addr: %s", serverAddr, localAddr)
-	fmt.Println("IN THE HEARTBEATSSSZZZ !!!!!!! ")
 	localUDPAddr, err := net.ResolveUDPAddr("udp", localAddr)
 	checkError(err)
 	fmt.Println("Error in resolving local")
@@ -834,6 +808,7 @@ func checkDisconnectedWrites(localPath string, clientId int, server *rpc.Client)
 
 			if err != nil {
 				fmt.Println("OLD WRITE FILE COULDN'T OPEN %s", oldFilepath)
+				return
 			}
 
 			var prevData []byte
@@ -842,6 +817,7 @@ func checkDisconnectedWrites(localPath string, clientId int, server *rpc.Client)
 			if err != nil {
 				checkError(err)
 				fmt.Println("Roll back old file error")
+				return
 			}
 
 			f.Close()
@@ -860,14 +836,10 @@ func checkDisconnectedWrites(localPath string, clientId int, server *rpc.Client)
 
 func (dfs *ClientDfs) GetChunk(args *shared.FileArgs, reply *shared.ChunkReply) error {
 	filepath := filepath.Join(dfs.localPath, args.Filename+".dfs")
-	fmt.Printf("Printing filepath in getchunk ....... %s\n", filepath)
 
 	chunk, err := chunkify(args.ChunkNum, filepath)
 	reply.Data = chunk
 
-	if err != nil {
-		fmt.Println("Err in chunkify")
-	}
 	return err
 }
 
@@ -914,7 +886,6 @@ func MountDFS(serverAddr string, localIp string, localPath string) (dfs DFS, err
 	isReconnectingClient := err == nil // File opened, contains id file
 
 	generatedIp := localIp + ":0"
-	fmt.Println("Is reconnecting : %t", isReconnectingClient)
 
 	if isReconnectingClient {
 		// Old client
@@ -932,12 +903,10 @@ func MountDFS(serverAddr string, localIp string, localPath string) (dfs DFS, err
 	checkError(err)
 	localAddr := conn.Addr()
 
-	fmt.Printf("\n\nPRINTING NEW LOCAL ADDRESS ...... %s\n\n", localAddr.String())
 	clientDfs := &ClientDfs{localPath: localPath, ip: localIp}
 	rpc.Register(clientDfs)
 	go rpc.Accept(conn)
 
-	fmt.Println("Before dial")
 	server, err := rpc.Dial("tcp", serverAddr)
 
 	if err != nil {
@@ -964,8 +933,6 @@ func MountDFS(serverAddr string, localIp string, localPath string) (dfs DFS, err
 		return dfsSingleton, err // Networking error, cannot dial into client from server
 	}
 
-	logger.Printf("Printing reply.... %+v\n\n", initReply)
-
 	// New client, write it to disk
 	if !isReconnectingClient {
 		// Create write.json for logging future writes
@@ -973,7 +940,6 @@ func MountDFS(serverAddr string, localIp string, localPath string) (dfs DFS, err
 
 		if err != nil {
 			checkError(err)
-			fmt.Printf("CAN'T CREATE WRITE LOG")
 		}
 
 		// Write id to disk
@@ -983,16 +949,10 @@ func MountDFS(serverAddr string, localIp string, localPath string) (dfs DFS, err
 		idFileData := IdFile{Id: initReply.Id, LocalAddr: localAddr.String()}
 		idData, err := json.Marshal(idFileData)
 
-		if err != nil {
-			checkError(err)
-			fmt.Println("Json marshalling error ..... ")
-		}
-
-		n, err := oldIdFile.Write(idData)
+		_, err = oldIdFile.Write(idData)
 
 		if err != nil {
 			checkError(err)
-			fmt.Printf("Write error again..... %v\n", n)
 		}
 
 		oldIdFile.Sync()
@@ -1010,7 +970,6 @@ func MountDFS(serverAddr string, localIp string, localPath string) (dfs DFS, err
 	dfsSingleton.server = server
 	dfsSingleton.modeMap = make(map[string]bool)
 
-	log.Println("Printing dfs singleton ............ %+v", dfsSingleton)
 	return dfsSingleton, nil
 }
 
