@@ -34,16 +34,8 @@ type HeartBeatData struct {
 
 type HeartBeatItem struct {
 }
-type WriteState uint32
+type WriteLocked bool
 
-const (
-	Unlocked WriteState = iota
-	Locked
-)
-
-// type Chunk [32]byte
-
-// dfslib.DFSInstance
 // FileInfo for identifying which clients own which files
 type FileInfo struct {
 	id      int
@@ -162,23 +154,20 @@ type ClientConn struct {
 }
 
 type WriterInfo struct {
-	WriteState WriteState
-	ClientId   int
+	IsLocked bool
+	ClientId int
 }
 type ServerDfs struct {
-	writerMap      map[string]WriterInfo        // filename to it's write state
-	versionMap     map[string][256]VersionStack // filename to {owner, versionNum}
-	nextId         int
-	clientToId     map[ClientInfo]int
-	idToClient     map[int]ClientConn
-	openedFile     map[string]int  // filenames to clientIDs who have opened them
-	files          map[string]bool // files that exist
-	writeMutex     *sync.Mutex
-	writeWaitGroup sync.WaitGroup
-	writeChannel   chan bool
-	rwLock         *sync.RWMutex
-	logger         *log.Logger
-	heartbeatAddr  string
+	writerMap     map[string]WriterInfo        // filename to it's write state
+	versionMap    map[string][256]VersionStack // filename to {owner, versionNum}
+	nextId        int
+	clientToId    map[ClientInfo]int
+	idToClient    map[int]ClientConn
+	openedFile    map[string]int  // filenames to clientIDs who have opened them
+	files         map[string]bool // files that exist
+	writeMutex    *sync.Mutex
+	logger        *log.Logger
+	heartbeatAddr string
 }
 
 // ****************** RPC METHODS THAT CLIENT CALLS *********** //
@@ -195,9 +184,6 @@ func (dfs *ServerDfs) RegisterFile(args *shared.FileArgs, reply *shared.FileExis
 		versionStack.Push(metaData)
 
 		versionStacks[i] = *versionStack
-		if i == 0 {
-			dfs.logger.Println("V1 Stack: %+v ", *versionStack)
-		}
 	}
 
 	dfs.versionMap[args.Filename] = versionStacks
@@ -234,8 +220,11 @@ func (dfs *ServerDfs) WriteChunk(args *shared.FileArgs, reply *shared.WriteReque
 	return nil
 }
 func (dfs *ServerDfs) CloseWrite(args shared.FileArgs, reply *shared.WriteRequestReply) error {
+	dfs.logger.Println("WRITER MAP AFTER BEFORE CLOSE .... %#v", dfs.writerMap)
 	delete(dfs.writerMap, args.Filename)
+	dfs.logger.Println("WRITER MAP AFTER CLOSE .... %#v", dfs.writerMap)
 	reply.CanWrite = false
+	reply.Id = 100
 	return nil
 }
 
@@ -268,14 +257,16 @@ func (dfs *ServerDfs) RequestWrite(args shared.FileArgs, reply *shared.WriteRequ
 	dfs.logger.Println("Writer info .... by %v", writerInfo)
 	dfs.logger.Println("printing writer map: %+v\n\n", dfs.writerMap)
 	defer dfs.writeMutex.Unlock()
-	if writerInfo.WriteState == Locked {
+
+	// Check if it's the same ID, maybe someone wants to open it twice ....
+	if writerInfo.IsLocked && writerInfo.ClientId != args.ClientId {
 		dfs.logger.Println("Write stack is locked")
 		// Check if that client is even alive
 		writerConn := dfs.idToClient[args.ClientId].conn
 
 		if writerConn == nil {
 			dfs.logger.Println("Person holding lock does'nt exist")
-			dfs.writerMap[args.Filename] = WriterInfo{ClientId: args.ClientId, WriteState: Locked}
+			dfs.writerMap[args.Filename] = WriterInfo{ClientId: args.ClientId, IsLocked: false}
 			// tell that client that it's taking too long.
 			reply.CanWrite = true
 		} else {
@@ -284,111 +275,12 @@ func (dfs *ServerDfs) RequestWrite(args shared.FileArgs, reply *shared.WriteRequ
 		}
 	} else {
 		dfs.logger.Println("Write stack NOT locked")
-		dfs.writerMap[args.Filename] = WriterInfo{ClientId: args.ClientId, WriteState: Locked}
+		dfs.writerMap[args.Filename] = WriterInfo{ClientId: args.ClientId, IsLocked: true}
 		reply.CanWrite = true
 	}
 
 	dfs.logger.Printf("PRINTING UPDATED WRITE MAP: %v", dfs.writerMap)
 	return nil
-	// timeout := make(chan bool, 1)
-
-	// go func(ch chan bool) {
-	// 	ch <- getWriteLock(dfs, args.Filename)
-	// }(dfs.writeChannel)
-
-	// go func() {
-	// 	time.Sleep(1 * time.Second)
-	// 	timeout <- true
-	// }()
-
-	// select {
-	// case acquiredLock := <-dfs.writeChannel:
-	// 	// Can write
-	// 	if acquiredLock {
-	// 		dfs.writerMap[args.Filename] = WriterInfo{ClientId: args.ClientId, WriteState: Locked}
-	// 		reply.CanWrite = true
-	// 		fmt.Println("Write request successful")
-	// 	} else {
-	// 		reply.CanWrite = false
-	// 		fmt.Println("Couldn't get write lock")
-	// 	}
-	// 	return nil
-	// case <-timeout:
-	// 	reply.CanWrite = false
-	// 	fmt.Println("Timed out of write, cannot write")
-	// 	return nil
-	// }
-	// dfs.writeMutex.Lock()
-
-	//var ch = make(chan bool)
-
-	// wg := sync.WaitGroup{}
-	// wg.Add(1)
-
-	// err := getWriteLock(dfs.writeChannel)
-
-	// if err != nil {
-	// 	fmt.Println("Couldn't get the lock")
-	// 	return err
-	// }
-
-	// reply.CanWrite = true
-	// dfs.writerMap[filename] = Locked
-	// go func () {
-	// 	defer wg.Done()
-	// 	err := getWriteLock()
-	// 	if err != nil {
-	// 		fmt.Println("Could not get the lock")
-	// 		return err
-	// 	} else {
-	// 		fmt.Println("Lock granted")
-	// 	}
-	// }()
-
-	// go func() {
-	// 	ch <- true
-	// }()
-
-	// c <- make()
-	// wg := sync.WaitGroup{}+++
-
-	// wg.Add(1)
-	// go func() {
-	// 	defer wg.Done()
-	// 	err := onlyOne()
-
-	// 	if err != nil {
-	// 		reply.CanWrite = false
-	// 		return
-	// 	} else {
-	// 		dfs.writerMap[args.Filename] = WriterInfo{ClientId: args.ClientId, WriteState: Locked}
-	// 		reply.CanWrite = true
-	// 	}
-	// }()
-
-	// wg.Wait()
-
-	// dfs.writeMutex.Lock()
-
-	// writerInfo := dfs.writerMap[args.Filename]
-	// locker := uint32(writerInfo.WriteState)
-
-	// Need to check for timeouts ......
-	// if writerInfo.WriteState == Locked {
-	// 	reply.CanWrite = false
-	// }
-
-	// canWrite := atomic.CompareAndSwapUint32(&locker, uint32(Unlocked), uint32(Locked))
-	// if !canWrite {
-	// 	reply.CanWrite = false
-	// 	return nil
-	// }
-
-	// // defer atomic.StoreUint32(&locker, uint32(Unlocked))
-	// dfs.writerMap[args.Filename] = WriterInfo{ClientId: args.ClientId, WriteState: Locked}
-	// reply.CanWrite = canWrite
-
-	// return nil
 }
 
 func (dfs *ServerDfs) GetBestChunk(args *shared.FileArgs, reply *shared.ChunkReply) error {
@@ -502,7 +394,7 @@ func (dfs *ServerDfs) GetBestFile(args *shared.FileArgs, reply *shared.FileReply
 				var getChunkReply shared.ChunkReply
 				err = clientConnInfo.conn.Call("ClientDfs.GetChunk", args, &getChunkReply)
 
-				dfs.logger.Println("Chunk reply is .... %+v", getChunkReply)
+				// dfs.logger.Println("Chunk reply is .... %+v", getChunkReply)
 				if err != nil {
 					dfs.logger.Println("Printing err .... %s, clientConn: %+v", err.Error())
 				}
@@ -575,7 +467,7 @@ func (dfs *ServerDfs) InitiateRPC(args *shared.InitiateArgs, reply *shared.Initi
 	client, err := rpc.Dial("tcp", args.Ip)
 	RecordClientInfo(client, args, reply, dfs)
 
-	dfs.logger.Println("DFS in Initiate is ..... %+v", *dfs)
+	// dfs.logger.Println("DFS in Initiate is ..... %#v", *dfs)
 	reply.Connected = true
 	return err
 }
@@ -605,17 +497,15 @@ func main() {
 	writerMutex := &sync.Mutex{}
 	var logger = log.New(os.Stdout, "[416_a2] ", log.Lshortfile)
 	dfs := &ServerDfs{
-		writerMap:      make(map[string]WriterInfo),
-		versionMap:     make(map[string][256]VersionStack),
-		nextId:         1,
-		clientToId:     make(map[ClientInfo]int),
-		idToClient:     make(map[int]ClientConn),
-		openedFile:     make(map[string]int),  // filenames to clientIDs who have opened them
-		files:          make(map[string]bool), //
-		writeMutex:     writerMutex,
-		writeWaitGroup: sync.WaitGroup{},
-		writeChannel:   make(chan bool),
-		logger:         logger}
+		writerMap:  make(map[string]WriterInfo),
+		versionMap: make(map[string][256]VersionStack),
+		nextId:     1,
+		clientToId: make(map[ClientInfo]int),
+		idToClient: make(map[int]ClientConn),
+		openedFile: make(map[string]int),  // filenames to clientIDs who have opened them
+		files:      make(map[string]bool), //
+		writeMutex: writerMutex,
+		logger:     logger}
 
 	rpc.Register(dfs)
 
@@ -624,12 +514,6 @@ func main() {
 	if err != nil {
 		logger.Fatal(err)
 	}
-
-	// dfs.writeWaitGroup.Add(1) // At most one writer
-	// go func() {
-	// 	dfs.writeWaitGroup.Wait()
-	// 	fmt.Println("Done Waiting for write")
-	// }()
 
 	// TODO fcai use this instead
 	// heartbeatListener, err := net.Listen("udp", serverIp + ":0")

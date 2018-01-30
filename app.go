@@ -11,10 +11,13 @@ package main
 
 // Expects dfslib.go to be in the ./dfslib/ dir, relative to
 // this app.go file
-import "./dfslib"
+import (
+	"fmt"
+	"os"
+	"time"
 
-import "fmt"
-import "os"
+	"./dfslib"
+)
 
 func main() {
 	serverAddr := "127.0.0.1:9482"
@@ -48,12 +51,24 @@ func main() {
 	// Open the file (and create it if it does not exist) for writing.
 	fmt.Println("Write mode is: %d, %d", dfslib.WRITE, dfslib.READ)
 	f, err := dfs.Open("a2", dfslib.WRITE)
-	if checkError(err) != nil {
+
+	checkError(err)
+
+	fmt.Println("Sleep app for 12 seconds")
+	time.Sleep(12 * time.Second)
+
+	fmt.Println("Awake")
+	f, err = dfs.Open("a2", dfslib.WRITE)
+
+	if err != nil {
+		checkError(err)
+		fmt.Println("SHOULD HAVE BEEN ABLE TO OPEN WRITE NOW ......")
+
 		return
 	}
 
 	var chunk dfslib.Chunk
-	const str = "Hello friends!"
+	const str = "EVIL HELLO!"
 	copy(chunk[:], str)
 
 	// Write the 0th chunk of the file.
@@ -61,7 +76,7 @@ func main() {
 	if err != nil {
 		fmt.Println("Write error")
 		checkError(err)
-		return
+		// return
 	}
 
 	for {
@@ -74,15 +89,15 @@ func main() {
 	// const str = "Hello friends!"
 	// copy(chunk[:], str)
 
-	// // Write the 0th chunk of the file.
-	// err = f.Write(0, &chunk)
-	// if checkError(err) != nil {
-	// 	return
-	// }
+	// Write the 0th chunk of the file.
+	err = f.Write(0, &chunk)
+	if checkError(err) != nil {
+		return
+	}
 
-	// // Read the 0th chunk of the file.
-	// err = f.Read(0, &chunk)
-	// checkError(err)
+	// Read the 0th chunk of the file.
+	err = f.Read(0, &chunk)
+	checkError(err)
 }
 
 // If error is non-nil, print it out and return it.

@@ -112,6 +112,12 @@ func (e WriteModeTimeoutError) Error() string {
 	return fmt.Sprintf("DFS: Write access to filename [%s] has timed out; reopen the file", string(e))
 }
 
+type AlreadyOpenedError string
+
+func (e AlreadyOpenedError) Error() string {
+	return fmt.Sprintf("DFS: Filename [%s] has already been opened", string(e))
+}
+
 // Contains filename
 type BadFilenameError string
 
@@ -320,14 +326,11 @@ func (file DFSFileT) Close() error {
 		args := shared.FileArgs{ClientId: file.ClientId, Filename: file.Filename}
 		reply := shared.WriteRequestReply{CanWrite: true}
 
-		err := file.Server.Call("ServerDfs.CloseWrite", &args, &reply)
+		file.Server.Call("ServerDfs.CloseWrite", &args, &reply)
 
-		if err != nil {
-			checkError(err)
-			fmt.Println("Couldn't return writes ...")
-			return err
+		if !reply.CanWrite {
+			fmt.Println("WRITE LOCK WASN'T RETURNED ")
 		}
-
 	}
 
 	// file.IsInvalid = isDisconnected
@@ -374,7 +377,7 @@ type DFSInstance struct {
 	localIp        string
 	localPath      string
 	server         *rpc.Client
-	modeMap        map[string]FileMode // Whenever a file is opened, record what mode it is in
+	modeMap        map[string]bool // List of opened files
 	isDisconnected bool
 }
 
@@ -439,7 +442,7 @@ func (dfs DFSInstance) UMountDFS() (err error) {
 		return DisconnectedError("Server")
 	}
 
-	dfs.modeMap = make(map[string]FileMode)
+	dfs.modeMap = make(map[string]bool)
 
 	// var reply shared.CloseReply
 	// args := shared.CloseArgs{Id: dfs.id}
@@ -461,11 +464,12 @@ func (dfs DFSInstance) UMountDFS() (err error) {
 func (dfs DFSInstance) Open(fname string, mode FileMode) (f DFSFile, err error) {
 	log.Println("OPEN IS CALLED WITH %d MODE", mode)
 	dfsFile := DFSFileT{
-		Mode:     mode,
-		Filename: fname,
-		ClientId: dfs.id,
-		Server:   dfs.server,
-		Filepath: dfs.localPath}
+		Mode:      mode,
+		Filename:  fname,
+		ClientId:  dfs.id,
+		Server:    dfs.server,
+		Filepath:  dfs.localPath,
+		IsInvalid: true} //
 
 	if !isValidFilename(fname) {
 		return dfsFile, BadFilenameError(fname)
@@ -502,13 +506,9 @@ func (dfs DFSInstance) Open(fname string, mode FileMode) (f DFSFile, err error) 
 
 			chunkData, _ := getChunkedFile(filePath)
 
-			// // TODO fcai - remove later
-			// if err != nil {
-			// 	log.Println("Error while chunkifying file in Open(D) file: %s", fname)
-			// }
-
 			dfsFile.Data = chunkData
 			dfsFile.Filename = fname
+			dfsFile.IsInvalid = false
 
 			return dfsFile, nil
 		default:
@@ -518,19 +518,15 @@ func (dfs DFSInstance) Open(fname string, mode FileMode) (f DFSFile, err error) 
 
 	// CONNECTED MODE
 	if !fileExists {
-
-		log.Println("File doesn't ")
 		fmt.Println("Before storeFileOnServer .... id is: %+v", *args)
 		err = storeFileOnServer(fname, dfs.localPath, dfs.server, args, &dfsFile)
 
+		// Became disconnected while trying to register new file to server
 		if err != nil {
-			// Became disconnected while trying to register new file to server
 			return dfsFile, DisconnectedError(fname)
 		}
-		// return dfsFile, nil
 	}
 
-	dfs.modeMap[fname] = mode
 	switch mode {
 	case READ:
 		fmt.Println("Reading...")
@@ -544,7 +540,13 @@ func (dfs DFSInstance) Open(fname string, mode FileMode) (f DFSFile, err error) 
 
 		dfsFile.Data = dfsFileReply.Data
 		dfsFile.Filename = dfsFileReply.Filename
-		writeFileLocally(dfsFile)
+		dfsFile.IsInvalid = false
+		dfs.modeMap[fname] = true
+
+		if fileExists {
+			// That means we're getting it from the server, and we need a local copy
+			writeFileLocally(dfsFile)
+		}
 		return dfsFile, nil
 
 	case DREAD:
@@ -553,8 +555,19 @@ func (dfs DFSInstance) Open(fname string, mode FileMode) (f DFSFile, err error) 
 		existsLocally, _ := dfs.LocalFileExists(fname)
 
 		if existsLocally {
+			filepath := filepath.Join(dfs.localPath, fname+".dfs")
+			data, err := getChunkedFile(filepath)
+
+			if err != nil {
+				checkError(err)
+				fmt.Println("ERROR IN DREAD OPEN FILE, CONNECTED, GET CHUNKEDFILE")
+			}
+
+			dfsFile.Data = data
+			dfsFile.IsInvalid = false
 			return dfsFile, nil
 		}
+
 		var dfsFileReply shared.FileReply
 		err = dfs.server.Call("ServerDfs.GetBestFile", args, &dfsFileReply)
 
@@ -564,7 +577,12 @@ func (dfs DFSInstance) Open(fname string, mode FileMode) (f DFSFile, err error) 
 
 		dfsFile.Data = dfsFileReply.Data
 		dfsFile.Filename = dfsFileReply.Filename
-		writeFileLocally(dfsFile)
+		dfsFile.IsInvalid = false
+
+		if fileExists {
+			// We got it from the server and now we have a local copy
+			writeFileLocally(dfsFile)
+		}
 		return dfsFile, nil
 
 	case WRITE:
@@ -576,10 +594,6 @@ func (dfs DFSInstance) Open(fname string, mode FileMode) (f DFSFile, err error) 
 		dfs.server.Call("ServerDfs.RequestWrite", fileWriteRequest, &writeReply)
 
 		log.Println("Write Request Reply is >>>>> ::::: %t", writeReply.CanWrite)
-		// if err != nil {
-		// 	fmt.Println("Err in Open wWrite, requesting write lock")
-		// 	checkError(err)
-		// }
 
 		if writeReply.CanWrite {
 			var dfsFileReply shared.FileReply
@@ -592,9 +606,13 @@ func (dfs DFSInstance) Open(fname string, mode FileMode) (f DFSFile, err error) 
 
 			dfsFile.Data = dfsFileReply.Data
 			dfsFile.Filename = dfsFileReply.Filename
-			writeFileLocally(dfsFile)
-
 			dfsFile.WriteLock = true
+
+			if fileExists {
+				// That means we're getting it from the server
+				writeFileLocally(dfsFile)
+			}
+
 			return dfsFile, err
 		}
 
@@ -609,14 +627,9 @@ type ClientDfs struct {
 	ip        string
 }
 
-// func (dfs *ClientDfs) PrintTest(args *shared.InitiateArgs, reply *shared.InitiateReply) error {
-// 	fmt.Println("PrintTest in client is: %+v", args)
-// 	*reply = shared.InitiateReply{100, true}
-// 	return nil
-// }
-
 // ************************  Helper funcs ************************** //
 
+// Writes this file locally. If file name does not exist, then it will create one
 func writeFileLocally(dfsFile DFSFileT) error {
 	fileByteData := make([]byte, FileSize)
 
@@ -720,12 +733,6 @@ func chunkify(chunkNum uint8, filepath string) (data shared.Chunk, err error) {
 	chunkBuf := make([]byte, ChunkSize)
 	offset := int64(chunkNum) * ChunkSize
 
-	// _, err = file.Read(chunkBuf)
-	// if err != nil {
-	// 	fmt.Println("READ Error in chunkify...., %s", err.Error())
-	// }
-	// fmt.Println("Print entire file: %s", string(chunkBuf[offset:offset+32]))
-	// fmt.Println("ChunkNum: %d, ChunkSize: %d, Offset: %d", chunkNum, ChunkSize, offset)
 	n, err := file.ReadAt(chunkBuf, offset)
 
 	if err != nil {
@@ -904,7 +911,7 @@ func MountDFS(serverAddr string, localIp string, localPath string) (dfs DFS, err
 
 	dfsSingleton.id = clientId
 	dfsSingleton.server = server
-	dfsSingleton.modeMap = make(map[string]FileMode)
+	dfsSingleton.modeMap = make(map[string]bool)
 
 	// 1) Continuousing try to connect to server
 
