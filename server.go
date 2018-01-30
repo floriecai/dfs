@@ -390,7 +390,7 @@ func (dfs *ServerDfs) GetBestFile(args *shared.FileArgs, reply *shared.FileReply
 					dfs.logger.Printf("COuldn't do these args: %#v", *args)
 					dfs.logger.Printf("Latest file data is: %#v", latestFileData)
 					dfs.logger.Printf("CANNOT CONNECT TO CLIENT: %#v", clientConnInfo)
-					return shared.BestChunkUnavailable("COULDNT DO IT")
+					return shared.BestChunkUnavailable("Client with chunk is disconnected")
 				}
 
 				err = clientConnInfo.conn.Call("ClientDfs.GetChunk", args, &getChunkReply)
@@ -436,6 +436,10 @@ func (dfs *ServerDfs) CloseConnection(args *shared.CloseArgs, reply *shared.Clos
 func (dfs *ServerDfs) InitiateRPC(args *shared.InitiateArgs, reply *shared.InitiateReply) error {
 	client, err := rpc.Dial("tcp", args.Ip)
 
+	if err != nil {
+		return err
+	}
+
 	var clientId int
 	if args.ClientId == 0 {
 		clientId = dfs.nextId
@@ -446,7 +450,7 @@ func (dfs *ServerDfs) InitiateRPC(args *shared.InitiateArgs, reply *shared.Initi
 
 	RecordClientInfo(client, args, reply, dfs, clientId)
 	reply.Connected = true
-	return err
+	return nil
 }
 
 // **************** RPC METHODS THAT CLIENT CALLS END *********** //
