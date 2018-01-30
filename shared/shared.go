@@ -20,6 +20,15 @@ type InitiateReply struct {
 	Connected bool
 }
 
+type CloseArgs struct {
+	Id int
+}
+
+type CloseReply struct {
+	Closed bool
+	// Connection *rpc.Client
+}
+
 // type TempArgs struct {
 // 	Id int
 // }

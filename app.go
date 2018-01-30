@@ -17,7 +17,7 @@ import "fmt"
 import "os"
 
 func main() {
-	serverAddr := "127.0.0.1:8257"
+	serverAddr := "127.0.0.1:9482"
 	localIP := "127.0.0.1"
 	localPath := "/tmp/dfs-g4w81/"
 
@@ -40,12 +40,13 @@ func main() {
 		return
 	}
 
-	if exists {
-		fmt.Println("File already exists, mission accomplished")
-		return
-	}
+	// if exists {
+	// 	fmt.Println("File already exists, mission accomplished")
+	// 	return
+	// }
 
 	// Open the file (and create it if it does not exist) for writing.
+	fmt.Println("Write mode is: %d, %d", dfslib.WRITE, dfslib.READ)
 	f, err := dfs.Open("a2", dfslib.WRITE)
 	if checkError(err) != nil {
 		return
