@@ -1,13 +1,47 @@
-Total mark: [100/100]
+Total mark: [0/100]
 ---------------------------------------------------
 
-Connected operation [60/100
-* One client; example scenarios [20/100]
-* One reader/writer client and one writer client; example scenarios [20/100]
-* Multiple reader clients and one writer client; example scenarios [20/100]
+Late penalty: 0
 
-Disconnected operation [40/100]
-* One client; example scenarios [20/100]
-* One reader/writer client and one writer client; example scenarios [10/100]
-* Multiple reader clients and one writer client; example scenarios [10/100]
+Connected operation [0/100]
+* Simple open: Client mounts DFS, opens a file, closes it, and then unmounts DFS [0/100]
+* Simple read: Client mounts DFS, opens a file, reads it, closes it, and then unmounts DFS [0/100]
+* Simple write: Client mounts DFS, opens a file, writes to it, reads it, closes it, and then unmounts DFS. [0/100]
+* Simple LocalFileExists: Client mounts DFS, opens a file, closes it, calls LocalFileExists on the file name, and then unmounts DFS [0/100]
+* Simple GlobalFileExists: Client mounts DFS, opens a file, closes it, calls GlobalFileExists on the file name, and then unmounts DFS [0/100]
+* Single client: Client A mounts DFS, opens an invalid file, opens a valid file, reads it, writes it, reads the content back, closes it, and unmounts DFS; client B mounts DFS, calls GlobalFileExists on the file name, cals LocalFileExists on the file name, opens the file, and then unmounts DFS [0/100]
+* One client is able to observe writes from another client (single write operation) [0/100]
+* One client is able to observe writes from another client (double write operation) [0/100]
+* Handling multiple clients attempting to open a file for writing [0/100]
+* Multiple reader clients and one writer client; One client opens for writing, other clients check global file exists [0/100]
+* Multiple reader clients and one writer client; One client opens for writing, other clients open for reading. First client performs three writes, other clients read after each write. [0/100]
+* Multiple reader clients and one writer client; First client writes file, other clients read the changes, first client closes the file. Repeated for each client [0/100]
 
+Disconnected operation [0/100]
+* Client writes file, disconnects; can use DREAD while disconnected [0/100]
+* Client writes file, disconnects; can LocalFileExists while disconnected [0/100]
+* Unobservable transitory disconnections [0/100]
+* Client A opens file F for writing, disconnects. Client B connects and opens F for writing, succeeds [0/100]
+* Client B opens file. Client A writes/closes file, disconnects. Client B writes file. Client A re-connects, reads, observes B changes [0/100]
+* Client A writes file. Client B opens file. Client A writes file, disconnects. Client B observe changes [0/100]
+* Multiple reader clients and one writer client; A opens, A writes, B opens, A disconnects, C opens, C reads [0/100]
+* Multiple reader clients and one writer client; client A opens, B opens, A writes, B reads, A disconnects, C opens, C reads [0/100]
+* Multiple reader clients and one writer client; client A opens, A writes, A closes, B opens, A disconnects, B reads, B writes, B closes, C opens, B disconnects, C reads, C writes, C closes [0/100]
+
+
+===================
+Test execution logs
+===================
+Commit used: 130dc4443bb16776ba099f2a0f72799c448b9d93  temp
+
+
+[TESTS] Copying package files
+'repos3/as2_g4w8/dfslib' -> 'src3/dfslib'
+'repos3/as2_g4w8/dfslib/dfslib.go' -> 'src3/dfslib/dfslib.go'
+'repos3/as2_g4w8/shared' -> 'src3/shared'
+'repos3/as2_g4w8/shared/shared.go' -> 'src3/shared/shared.go'
+[TESTS] Compiling master process
+dfslib/dfslib.go:12:2: cannot find package "as2_g4w8/shared" in any of:
+	/usr/local/go/src/as2_g4w8/shared (from $GOROOT)
+	/home/rmc/src/ta/416/ubc-cpsc416/2017w2/assign2/src/as2_g4w8/shared (from $GOPATH)
+[TESTS] Compilation failed; aborting
