@@ -12,7 +12,6 @@ package main
 // this app.go file
 
 import (
-	"as2_g4w8/shared"
 	"encoding/json"
 	"fmt"
 	"log"
@@ -20,6 +19,8 @@ import (
 	"net/rpc"
 	"os"
 	"sync"
+
+	"./shared"
 )
 
 // MaxClients is unique clients to ever connect to the server
@@ -349,6 +350,7 @@ func (dfs *ServerDfs) GetBestFile(args *shared.FileArgs, reply *shared.FileReply
 					return shared.BestChunkUnavailable("Client with chunk is")
 				}
 
+				args.ChunkNum = uint8(i)
 				err = clientConnInfo.conn.Call("ClientDfs.GetChunk", args, &getChunkReply)
 
 				// Found the chunk
@@ -432,7 +434,8 @@ func main() {
 		writeMutex:   writerMutex,
 		logger:       logger}
 
-	rpc.Register(dfs)
+	rpcServer := rpc.NewServer()
+	rpcServer.Register(dfs)
 
 	l, err := net.Listen("tcp", serverAddr)
 	if err != nil {
@@ -485,7 +488,7 @@ func main() {
 	// go func(l net.Listener) {
 	for {
 		conn, _ := l.Accept()
-		go rpc.ServeConn(conn)
+		go rpcServer.ServeConn(conn)
 	}
 	// }(l)
 }

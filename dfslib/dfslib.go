@@ -9,7 +9,6 @@ file system (DFS) system to be used in assignment 2 of UBC CS 416
 package dfslib
 
 import (
-	"as2_g4w8/shared"
 	"encoding/json"
 	"fmt"
 	"io/ioutil"
@@ -20,6 +19,8 @@ import (
 	"path/filepath"
 	"regexp"
 	"time"
+
+	"../shared"
 )
 
 const ChunkSize = 32
@@ -262,20 +263,18 @@ func (file DFSFileT) Write(chunkNum uint8, chunk *Chunk) error {
 
 	// Write locally to disk
 	path := filepath.Join(file.Filepath, file.Filename+".dfs")
-	localFile, err := os.OpenFile(path, os.O_WRONLY, 0644)
-
-	defer localFile.Close()
+	localFile, err := os.OpenFile(path, os.O_RDWR, 0644)
 
 	if err != nil {
 		checkError(err)
 		return err
 	}
 
+	defer localFile.Close()
+
 	var writeBuf []byte = make([]byte, 32)
 	copy(writeBuf[:], (*chunk)[:])
 	_, err = localFile.WriteAt(writeBuf, int64(chunkNum)*ChunkSize)
-
-	localFile.Sync()
 
 	if err != nil {
 		checkError(err)
@@ -284,7 +283,11 @@ func (file DFSFileT) Write(chunkNum uint8, chunk *Chunk) error {
 
 	// Write to log
 	writeLogFilepath := filepath.Join(file.Filepath, "write.json")
-	writeLog, err := os.Open(writeLogFilepath)
+	writeLog, err := os.OpenFile(writeLogFilepath, os.O_WRONLY, 0644)
+
+	if err != nil {
+		checkError(err)
+	}
 
 	writeData := WriteData{
 		Version:  file.Versions[chunkNum],
@@ -293,9 +296,17 @@ func (file DFSFileT) Write(chunkNum uint8, chunk *Chunk) error {
 		Filename: file.Filename}
 
 	writeDataByte, err := json.Marshal(writeData)
-	writeLog.Write(writeDataByte)
+	_, err = writeLog.Write(writeDataByte)
 
-	writeLog.Sync()
+	if err != nil {
+		fmt.Println("Err n writing to writelog")
+	}
+
+	err = writeLog.Sync()
+
+	if err != nil {
+		fmt.Println("Err n syncing to writelog")
+	}
 
 	// Tell server about the write
 	fileArgs := &shared.FileArgs{ClientId: file.ClientId, ChunkNum: chunkNum, Filename: file.Filename}
@@ -639,7 +650,7 @@ func writeFileLocally(dfsFile DFSFileT) error {
 		f, err = os.Create(filepath)
 	} else {
 		// File exists locally, just overwrite it
-		f, err = os.Open(filepath)
+		f, err = os.OpenFile(filepath, os.O_WRONLY, 0644)
 	}
 
 	if err != nil {
@@ -802,7 +813,7 @@ func checkDisconnectedWrites(localPath string, clientId int, server *rpc.Client)
 			// Roll back on the write
 
 			oldFilepath := filepath.Join(localPath, writeData.Filename+".dfs")
-			f, err := os.Open(oldFilepath)
+			f, err := os.OpenFile(oldFilepath, os.O_RDWR, 0644)
 
 			checkError(err)
 
@@ -810,6 +821,8 @@ func checkDisconnectedWrites(localPath string, clientId int, server *rpc.Client)
 				fmt.Println("OLD WRITE FILE COULDN'T OPEN %s", oldFilepath)
 				return
 			}
+
+			defer f.Close()
 
 			var prevData []byte
 			copy(prevData[:], writeData.PrevData[:])
@@ -820,7 +833,6 @@ func checkDisconnectedWrites(localPath string, clientId int, server *rpc.Client)
 				return
 			}
 
-			f.Close()
 		}
 	}
 
@@ -836,7 +848,7 @@ func checkDisconnectedWrites(localPath string, clientId int, server *rpc.Client)
 
 func (dfs *ClientDfs) GetChunk(args *shared.FileArgs, reply *shared.ChunkReply) error {
 	filepath := filepath.Join(dfs.localPath, args.Filename+".dfs")
-
+	
 	chunk, err := chunkify(args.ChunkNum, filepath)
 	reply.Data = chunk
 
@@ -885,8 +897,6 @@ func MountDFS(serverAddr string, localIp string, localPath string) (dfs DFS, err
 	_, err = os.Stat(idFilePath)
 	isReconnectingClient := err == nil // File opened, contains id file
 
-	generatedIp := localIp + ":0"
-
 	if isReconnectingClient {
 		// Old client
 		idFile, _ := os.Open(idFilePath)
@@ -895,17 +905,26 @@ func MountDFS(serverAddr string, localIp string, localPath string) (dfs DFS, err
 		json.Unmarshal(idBytes, &idFileJson)
 
 		clientId = idFileJson.Id
-		generatedIp = idFileJson.LocalAddr
 	}
 
-	conn, err := net.Listen("tcp", generatedIp)
+	l, err := net.Listen("tcp", ":0")
 
-	checkError(err)
-	localAddr := conn.Addr()
+	if err != nil {
+		return dfsSingleton, err
+	}
+
+	localAddr := localIp + l.Addr().String()[4:]
 
 	clientDfs := &ClientDfs{localPath: localPath, ip: localIp}
-	rpc.Register(clientDfs)
-	go rpc.Accept(conn)
+	rpcServer := rpc.NewServer()
+	rpcServer.Register(clientDfs)
+
+	go func() {
+		for {
+			conn, _ := l.Accept()
+			go rpcServer.ServeConn(conn)
+		}
+	}()
 
 	server, err := rpc.Dial("tcp", serverAddr)
 
@@ -925,7 +944,7 @@ func MountDFS(serverAddr string, localIp string, localPath string) (dfs DFS, err
 
 	// Register with Server. Even if you are ReMounting, you need to register
 	var initReply shared.InitiateReply
-	args := &shared.InitiateArgs{Ip: localAddr.String(), LocalPath: localPath, ClientId: clientId}
+	args := &shared.InitiateArgs{Ip: localAddr, LocalPath: localPath, ClientId: clientId}
 
 	err = server.Call("ServerDfs.InitiateRPC", args, &initReply)
 
@@ -946,7 +965,7 @@ func MountDFS(serverAddr string, localIp string, localPath string) (dfs DFS, err
 		createFile("id", localPath, ".json")
 
 		oldIdFile, _ := os.OpenFile(idFilePath, os.O_WRONLY, 0644)
-		idFileData := IdFile{Id: initReply.Id, LocalAddr: localAddr.String()}
+		idFileData := IdFile{Id: initReply.Id, LocalAddr: localAddr}
 		idData, err := json.Marshal(idFileData)
 
 		_, err = oldIdFile.Write(idData)
@@ -963,7 +982,7 @@ func MountDFS(serverAddr string, localIp string, localPath string) (dfs DFS, err
 	// ID was assigned
 	// Lol does this even work, don't think so .....
 	if dfsSingleton.id != 0 {
-		go initiateHeartBeatProtocol(dfsSingleton.id, serverAddr, localAddr.String())
+		go initiateHeartBeatProtocol(dfsSingleton.id, serverAddr, localAddr)
 	}
 
 	dfsSingleton.id = clientId
